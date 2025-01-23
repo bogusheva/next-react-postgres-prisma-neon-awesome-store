@@ -1,9 +1,12 @@
 "use server";
 
-import { signInFormSchema } from "../validators";
-import { signIn, signOut } from "@/auth";
+import { shippingAddressSchema, signInFormSchema, signUpFormSchema } from "../validators";
+import { auth, signIn, signOut } from "@/auth";
 import { isRedirectError } from "next/dist/client/components/redirect-error";
-import { SignInFormData } from "../types";
+import { hashSync } from "bcrypt-ts-edge";
+import { prisma } from "@/db/prisma";
+import { ShippingAddress, SignInFormData } from "../types";
+import { formatErrors } from "../utils";
 
 //Sign in user with the credentials
 export async function signInWithCredentials(prevState: SignInFormData, formData: FormData) {
@@ -26,7 +29,7 @@ export async function signInWithCredentials(prevState: SignInFormData, formData:
 
         return {
             success: false,
-            message: "Invalid email or password",
+            message: formatErrors(error),
         };
     }
 }
@@ -34,4 +37,86 @@ export async function signInWithCredentials(prevState: SignInFormData, formData:
 //Sign user out
 export async function signOutUser() {
     await signOut();
+}
+
+//Sign Up user
+export async function signUpUser(prevState: SignInFormData, formData: FormData) {
+    try {
+        const user = signUpFormSchema.parse({
+            name: formData.get("name"),
+            email: formData.get("email"),
+            password: formData.get("password"),
+            confirmPassword: formData.get("confirmPassword"),
+        });
+
+        const plainPassword = user.password;
+
+        user.password = hashSync(user.password, 10);
+
+        await prisma.user.create({
+            data: {
+                name: user.name,
+                email: user.email,
+                password: user.password,
+            },
+        });
+
+        await signIn("credentials", {
+            email: user.email,
+            password: plainPassword,
+        });
+
+        return {
+            success: true,
+            message: "User registered successfully",
+        };
+    } catch (error) {
+        if (isRedirectError(error)) {
+            throw error;
+        }
+
+        return {
+            success: false,
+            message: formatErrors(error),
+        };
+    }
+}
+
+//Get user by ID
+export async function getUserById(userId: string) {
+    const user = await prisma.user.findFirst({
+        where: { id: userId },
+    });
+    if (!user) throw new Error("User not found");
+
+    return user;
+}
+
+//Update user's address
+export async function updateUserAddress(data: ShippingAddress) {
+    try {
+        const session = await auth();
+        const currentUser = await prisma.user.findFirst({
+            where: { id: session?.user?.id },
+        });
+
+        if (!currentUser) throw new Error("User not found");
+
+        const address = shippingAddressSchema.parse(data);
+
+        await prisma.user.update({
+            where: { id: currentUser.id },
+            data: { address },
+        });
+
+        return {
+            success: true,
+            message: "User updated successfully",
+        };
+    } catch (error) {
+        return {
+            success: false,
+            message: formatErrors(error),
+        };
+    }
 }
